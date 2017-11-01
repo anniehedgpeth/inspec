@@ -23,6 +23,12 @@ module Inspec::Resources
         its('value') { should cmp == 1 }
       end
 
+      # Using Windows authentication
+      sql = mssql_session(integrated_security: true)
+      describe sql.query('SELECT * FROM table').row(0).column('columnname') do
+        its('value') { should cmp == 1 }
+      end
+
       # Passing no credentials to mssql_session forces it to use Windows authentication
       sql_windows_auth = mssql_session
       describe sql.query(\"SELECT SERVERPROPERTY('IsIntegratedSecurityOnly') as \\\"login_mode\\\";\").row(0).column('login_mode') do
@@ -31,7 +37,7 @@ module Inspec::Resources
       end
     "
 
-    attr_reader :user, :password, :host
+    attr_reader :user, :password, :host, :integrated_security
     def initialize(opts = {})
       @user = opts[:user]
       @password = opts[:password] || opts[:pass]
@@ -40,24 +46,33 @@ module Inspec::Resources
       end
       @host = opts[:host] || 'localhost'
       @instance = opts[:instance]
-
+      @integrated_security = opts[:integrated_security]
       # check if sqlcmd is available
       return skip_resource('sqlcmd is missing') if !inspec.command('sqlcmd').exist?
       # check that database is reachable
       return skip_resource("Can't connect to the MS SQL Server.") if !test_connection
     end
 
-    def query(q)
+    def sql_cmd(q)
       escaped_query = q.gsub(/\\/, '\\\\').gsub(/"/, '\\"').gsub(/\$/, '\\$')
       # surpress 'x rows affected' in SQLCMD with 'set nocount on;'
       cmd_string = "sqlcmd -Q \"set nocount on; #{escaped_query}\" -W -w 1024 -s ','"
-      cmd_string += " -U '#{@user}' -P '#{@password}'" unless @user.nil? || @password.nil?
+      if integrated_security
+        cmd_string += ' -E'
+      elsif !@user.nil? && !@password.nil?
+        cmd_string += " -U '#{@user}' -P '#{@password}'"
+      end
+
       if @instance.nil?
         cmd_string += " -S '#{@host}'"
       else
         cmd_string += " -S '#{@host}\\#{@instance}'"
       end
-      cmd = inspec.command(cmd_string)
+      cmd_string
+    end
+
+    def query(q)
+      cmd = inspec.command(sql_cmd(q))
       out = cmd.stdout + "\n" + cmd.stderr
       if cmd.exit_status != 0 || out =~ /Sqlcmd: Error/
         # TODO: we need to throw an exception here
